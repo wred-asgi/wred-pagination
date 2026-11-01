@@ -1,7 +1,7 @@
 # wred-pagination
 
 Bounded pagination parameters, response helpers, and optional SQLAlchemy adapters.
-Python 3.11+, Wred 0.13–0.14.
+Python 3.11+, Wred 0.13–0.15.
 
 ```sh
 pip install './extensions/wred-pagination[sqlalchemy]'
@@ -24,10 +24,12 @@ async def items(request, pagination):
     )
 ```
 
-`paginate(default=25, maximum=100, argument='pagination', mode='offset')` injects an
+`paginate(default=25, maximum=100, argument='pagination', mode='offset', maximum_offset=10000)` injects an
 immutable `Pagination(limit, offset=0, cursor=None)`. Invalid, negative, zero, or
 excessive limits return 422; values are rejected rather than silently clamped.
-Offset mode accepts `limit` and `offset`. Cursor mode accepts `limit` and `cursor`.
+Offsets above 10,000 return 422 by default. Set `maximum_offset` to a workload-tested
+cap, or explicitly use `None` for legacy unbounded offsets. Prefer indexed cursor
+pagination for deep traversal. Offset mode accepts `limit` and `offset`. Cursor mode accepts `limit` and `cursor`.
 Mixing modes is rejected. No database query or list slicing happens in the decorator.
 
 `Pagination.page(items, total=None, next_cursor=None, previous_cursor=None)` builds
@@ -37,7 +39,9 @@ a response envelope. Total is optional to avoid an automatic expensive count.
 stable application secret of at least 32 bytes shared across workers. Tokens are
 signed, not encrypted. Do not encode sensitive ordering values. `encode(values,
 binding=..., direction='next')` and `decode(token, binding=...)` support generic
-backends. Invalid, expired, or context-mismatched tokens raise `InvalidCursor`,
+backends. Values must be a list; encoded tokens are capped at 8,192 characters.
+Direct `Pagination` construction also rejects nonpositive limits and negative offsets.
+Invalid, expired, or context-mismatched tokens raise `InvalidCursor`,
 which the decorator maps to 422.
 
 The `wred_pagination.sqlalchemy` optional module provides:
@@ -61,6 +65,6 @@ set `WRED_TEST_POSTGRES` to an isolated asyncpg database URL for PostgreSQL chec
 
 ## Extension compatibility
 
-Follows the [Wred extension contract v1](https://github.com/wred-asgi/.github/blob/main/EXTENSIONS.md).
+Follows the [Wred extension contract v1.1](https://github.com/wred-asgi/.github/blob/main/EXTENSIONS.md).
 Keep `@app.route` outermost for
 route decorators; register routes on the inner Wred app when using ASGI wrappers.

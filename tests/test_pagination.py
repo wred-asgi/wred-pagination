@@ -94,5 +94,12 @@ async def test_parameter_bounds():
         transport=httpx.ASGITransport(app), base_url="http://test"
     ) as client:
         assert (await client.get("/")).json() == {"limit": 25}
-        for query in ("limit=0", "limit=31", "offset=-1", "limit=no", "cursor=abc"):
+        for query in (
+            "limit=0",
+            "limit=31",
+            "offset=-1",
+            "offset=10001",
+            "limit=no",
+            "cursor=abc",
+        ):
             assert (await client.get("/?" + query)).status_code == 422

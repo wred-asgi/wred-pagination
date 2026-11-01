@@ -3,11 +3,12 @@
 import base64
 import hmac
 import json
+import math
 import time
 from dataclasses import dataclass
 from functools import wraps
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 
 class InvalidCursor(ValueError):
@@ -17,11 +18,20 @@ class InvalidCursor(ValueError):
 class CursorCodec:
     def __init__(self, secret, *, ttl=86400):
         self.secret = secret.encode() if isinstance(secret, str) else secret
-        if len(self.secret) < 32 or ttl <= 0:
+        if (
+            not isinstance(self.secret, bytes)
+            or len(self.secret) < 32
+            or isinstance(ttl, bool)
+            or not isinstance(ttl, (int, float))
+            or not math.isfinite(ttl)
+            or ttl <= 0
+        ):
             raise ValueError("Use a secret of at least 32 bytes and a positive TTL")
         self.ttl = ttl
 
     def encode(self, values, *, binding, direction="next"):
+        if not isinstance(values, list) or direction not in ("next", "previous"):
+            raise ValueError("Cursor values must be a list with a valid direction")
         data = json.dumps(
             {
                 "v": 1,
@@ -33,7 +43,10 @@ class CursorCodec:
             separators=(",", ":"),
         ).encode()
         signature = hmac.digest(self.secret, data, "sha256")
-        return base64.urlsafe_b64encode(signature + data).rstrip(b"=").decode()
+        token = base64.urlsafe_b64encode(signature + data).rstrip(b"=").decode()
+        if len(token) > 8192:
+            raise ValueError("Cursor ordering values exceed the token size limit")
+        return token
 
     def decode(self, token, *, binding):
         try:
@@ -65,6 +78,23 @@ class Pagination:
     offset: int = 0
     cursor: str | None = None
 
+    def __post_init__(self):
+        if (
+            type(self.limit) is not int
+            or self.limit < 1
+            or type(self.offset) is not int
+            or self.offset < 0
+        ):
+            raise ValueError(
+                "Pagination requires a positive integer limit and nonnegative integer offset"
+            )
+        if self.cursor is not None and (
+            not isinstance(self.cursor, str)
+            or not self.cursor
+            or len(self.cursor) > 8192
+        ):
+            raise ValueError("Invalid pagination cursor")
+
     def page(self, items, *, total=None, next_cursor=None, previous_cursor=None):
         result = {"items": list(items), "limit": self.limit}
         if self.cursor is None:
@@ -75,10 +105,30 @@ class Pagination:
         return result
 
 
-def paginate(default=25, maximum=100, *, argument="pagination", mode="offset"):
-    if not 1 <= default <= maximum or mode not in ("offset", "cursor"):
+def paginate(
+    default=25,
+    maximum=100,
+    *,
+    argument="pagination",
+    mode="offset",
+    maximum_offset=10000,
+):
+    if (
+        type(default) is not int
+        or type(maximum) is not int
+        or not 1 <= default <= maximum
+        or mode not in ("offset", "cursor")
+    ):
         raise ValueError("Invalid pagination configuration")
-    if not argument or not argument.isidentifier() or argument == "request":
+    if maximum_offset is not None and (
+        type(maximum_offset) is not int or maximum_offset < 0
+    ):
+        raise ValueError("maximum_offset must be a nonnegative integer or None")
+    if (
+        not isinstance(argument, str)
+        or not argument.isidentifier()
+        or argument == "request"
+    ):
         raise ValueError("Use a named argument other than request")
 
     def decorate(handler):
@@ -88,7 +138,11 @@ def paginate(default=25, maximum=100, *, argument="pagination", mode="offset"):
                 query = request.query
                 limit = int(query.get("limit", default))
                 offset = int(query.get("offset", "0"))
-                if not 1 <= limit <= maximum or offset < 0:
+                if (
+                    not 1 <= limit <= maximum
+                    or offset < 0
+                    or (maximum_offset is not None and offset > maximum_offset)
+                ):
                     raise ValueError()
                 if (
                     mode == "cursor"
@@ -151,6 +205,8 @@ def paginate(default=25, maximum=100, *, argument="pagination", mode="offset"):
                 else {"type": "integer", "minimum": 0, "default": 0},
             },
         ]
+        if mode == "offset" and maximum_offset is not None:
+            parameters[-1]["schema"]["maximum"] = maximum_offset
         metadata["parameters"] = parameters
         wrapped.__wred_openapi__ = metadata
         return wrapped
